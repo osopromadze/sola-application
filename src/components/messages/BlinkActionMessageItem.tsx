@@ -1,7 +1,6 @@
 'use client';
 
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import Image from 'next/image';
 import { Transaction, VersionedTransaction } from '@solana/web3.js';
 import {
   LuBolt,
@@ -137,6 +136,14 @@ export const BlinkActionMessageItem: FC<BlinkActionMessageItemProps> = ({
         return;
       }
 
+      if (
+        props.account &&
+        currentWallet.address.toLowerCase() !== props.account.toLowerCase()
+      ) {
+        toast.error('Connected wallet does not match the Blink account');
+        return;
+      }
+
       setStatus('loading');
       setStatusText('Preparing transaction');
       setError(null);
@@ -147,7 +154,7 @@ export const BlinkActionMessageItem: FC<BlinkActionMessageItemProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             actionUrl: props.actionUrl,
-            account: currentWallet.address,
+            account: props.account || currentWallet.address,
             actionHref: action?.href,
             params: props.params,
           }),
@@ -206,7 +213,13 @@ export const BlinkActionMessageItem: FC<BlinkActionMessageItemProps> = ({
         toast.error(message);
       }
     },
-    [currentWallet, props.actionUrl, props.params, selectedAction]
+    [
+      currentWallet,
+      props.account,
+      props.actionUrl,
+      props.params,
+      selectedAction,
+    ]
   );
 
   useEffect(() => {
@@ -273,13 +286,14 @@ export const BlinkActionMessageItem: FC<BlinkActionMessageItemProps> = ({
     >
       <div className="space-y-4">
         {metadata?.icon && (
-          <Image
+          // Plain <img> for arbitrary Blink hosts (avoid next/image remote-host constraints)
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
             src={metadata.icon}
             alt={metadata.title || 'Blink icon'}
             width={56}
             height={56}
             className="w-14 h-14 rounded-xl object-cover border border-border"
-            unoptimized
           />
         )}
 

@@ -24,17 +24,26 @@ const PRIVATE_HOST_PATTERNS = [
   /^169\.254\./,
   /^0\.0\.0\.0$/,
   /^::1$/,
+  /^::$/,
   /^fc00:/i,
   /^fd00:/i,
   /^fe80:/i,
 ];
 
-const isPrivateHost = (hostname: string) =>
-  PRIVATE_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+const normalizeHost = (hostname: string) => {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const mapped = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  return mapped ? mapped[1] : host;
+};
+
+const isPrivateHost = (hostname: string) => {
+  const host = normalizeHost(hostname);
+  return PRIVATE_HOST_PATTERNS.some((pattern) => pattern.test(host));
+};
 
 const parseHttpUrl = (value: string) => {
   const url = new URL(value);
-  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  const hostname = normalizeHost(url.hostname);
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Blink action URL must use http or https');
@@ -51,6 +60,9 @@ const assertSafeActionUrl = async (value: string) => {
   const { hostname } = parseHttpUrl(value);
 
   if (isIP(hostname)) {
+    if (isPrivateHost(hostname)) {
+      throw new Error('Unsafe Blink action URL');
+    }
     return;
   }
 
@@ -77,6 +89,28 @@ const resolveActionHref = async (
   return url.toString();
 };
 
+const fetchBlink = async (url: string, init?: RequestInit) => {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...ACTION_HEADERS,
+      ...(init?.headers ?? {}),
+    },
+    cache: 'no-store',
+    redirect: 'error',
+  });
+
+  return response;
+};
+
+const readJson = async (response: Response) => {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+};
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as BlinkActionRequest;
@@ -97,10 +131,15 @@ export async function POST(req: Request) {
       );
     }
 
-    const metadataResponse = await fetch(body.actionUrl, {
-      headers: ACTION_HEADERS,
-      cache: 'no-store',
-    });
+    let metadataResponse: Response;
+    try {
+      metadataResponse = await fetchBlink(body.actionUrl);
+    } catch {
+      return Response.json(
+        { error: 'Unable to load Blink metadata' },
+        { status: 400 }
+      );
+    }
 
     if (!metadataResponse.ok) {
       return Response.json(
@@ -109,7 +148,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const metadata = await metadataResponse.json();
+    const metadata = await readJson(metadataResponse);
+    if (!metadata) {
+      return Response.json(
+        { error: 'Blink metadata response was not valid JSON' },
+        { status: 502 }
+      );
+    }
 
     if (!body.account) {
       return Response.json({ metadata });
@@ -121,16 +166,23 @@ export async function POST(req: Request) {
       body.params
     );
 
-    const transactionResponse = await fetch(actionHref, {
-      method: 'POST',
-      headers: ACTION_HEADERS,
-      body: JSON.stringify({ account: body.account }),
-      cache: 'no-store',
-    });
+    let transactionResponse: Response;
+    try {
+      transactionResponse = await fetchBlink(actionHref, {
+        method: 'POST',
+        body: JSON.stringify({ account: body.account }),
+      });
+    } catch {
+      return Response.json(
+        {
+          metadata,
+          error: 'Unable to create Blink transaction',
+        },
+        { status: 400 }
+      );
+    }
 
-    const transactionPayload = await transactionResponse
-      .json()
-      .catch(() => ({}));
+    const transactionPayload = (await readJson(transactionResponse)) ?? {};
 
     if (!transactionResponse.ok) {
       return Response.json(
